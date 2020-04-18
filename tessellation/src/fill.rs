@@ -218,7 +218,7 @@ impl Spans {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 struct PendingEdge {
     to: Point,
     angle: f32,
@@ -713,6 +713,7 @@ impl FillTessellator {
         self.log = is_enabled;
     }
 
+    //#[inline(never)]
     fn tessellator_loop(
         &mut self,
         attrib_store: Option<&dyn AttributeStore>,
@@ -805,6 +806,7 @@ impl FillTessellator {
     }
 
     /// An iteration of the sweep line algorithm.
+    //#[inline(never)]
     fn process_events(
         &mut self,
         scan: &mut ActiveEdgeScan,
@@ -905,6 +907,7 @@ impl FillTessellator {
     ///      is needed (for example end events or right events).
     /// - 3) Loop over the edges on the right of the current point to detect potential edges that should
     ///      have been handled in the previous phases.
+    //#[inline(never)]
     fn scan_active_edges(&self, scan: &mut ActiveEdgeScan) -> Result<(), InternalError> {
         scan.reset();
 
@@ -1223,6 +1226,7 @@ impl FillTessellator {
         Ok(false)
     }
 
+    //#[inline(never)]
     fn process_edges_above(
         &mut self,
         scan: &mut ActiveEdgeScan,
@@ -1298,6 +1302,7 @@ impl FillTessellator {
         }
     }
 
+    //#[inline(never)]
     fn process_edges_below(&mut self, scan: &mut ActiveEdgeScan) {
         let mut winding = scan.winding_before_point.clone();
 
@@ -1369,6 +1374,7 @@ impl FillTessellator {
         }
     }
 
+    //#[inline(never)]
     fn update_active_edges(&mut self, scan: &ActiveEdgeScan) {
         let above = scan.above.start..scan.above.end;
 
@@ -1379,26 +1385,23 @@ impl FillTessellator {
             above.start,
             above.end
         );
-        for active_edge_idx in above.clone().rev() {
-            debug_assert!(
-                self.active.edges[active_edge_idx].is_merge
-                    || !is_after(self.current_position, self.active.edges[active_edge_idx].to)
-            );
-            self.active.edges.remove(active_edge_idx);
-        }
 
         if !self.assume_no_intersection {
-            self.handle_intersections();
+            self.handle_intersections(above.clone());
         }
 
-        // Insert the pending edges.
+        #[cfg(debug_assertions)]
+        for active_edge in &self.active.edges[above.clone()] {
+            debug_assert!(
+                active_edge.is_merge || !is_after(self.current_position, active_edge.to)
+            );
+        }
+
         let from = self.current_position;
-        let first_edge_below = above.start;
-        for (i, edge) in self.edges_below.drain(..).enumerate() {
-            assert!(from != edge.to);
-            let idx = first_edge_below + i;
-            self.active.edges.insert(
-                idx,
+        let from_id = self.current_vertex;
+        self.active.edges.splice(
+            above,
+            self.edges_below.iter().map(|edge| {
                 ActiveEdge {
                     min_x: from.x.min(edge.to.x),
                     max_x: from.x.max(edge.to.x),
@@ -1407,12 +1410,14 @@ impl FillTessellator {
                     to: edge.to,
                     winding: edge.winding,
                     is_merge: false,
-                    from_id: self.current_vertex,
+                    from_id,
                     src_edge: edge.src_edge,
                     range_end: edge.range_end,
-                },
-            );
-        }
+                }
+            }),
+        );
+
+        self.edges_below.clear();
     }
 
     fn split_event(&mut self, left_enclosing_edge_idx: ActiveEdgeIdx, left_span_idx: SpanIdx) {
@@ -1469,7 +1474,8 @@ impl FillTessellator {
         );
     }
 
-    fn handle_intersections(&mut self) {
+    //#[inline(never)]
+    fn handle_intersections(&mut self, skip_range: Range<usize>) {
         // Do intersection checks for all of the new edges against already active edges.
         //
         // If several intersections are found on the same edges we only keep the top-most.
@@ -1500,6 +1506,9 @@ impl FillTessellator {
             let mut tb_min = 1.0;
             let mut intersection = None;
             for (i, active_edge) in self.active.edges.iter().enumerate() {
+                if skip_range.contains(&i) {
+                    continue;
+                }
                 if active_edge.is_merge || below_min_x > active_edge.max_x {
                     continue;
                 }
